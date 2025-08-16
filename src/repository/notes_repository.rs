@@ -1,50 +1,61 @@
+use std::sync::Arc;
+
 use agdb::QueryBuilder;
+use tokio::sync::RwLock;
 
 use crate::models::note::Note;
 
 pub struct NotesRepository {
-    db: agdb::Db,
+    db: Arc<RwLock<agdb::Db>>,
 }
 
 impl NotesRepository {
-    pub fn new(db: agdb::Db) -> Self {
+    pub fn new(db: Arc<RwLock<agdb::Db>>) -> Self {
         Self { db }
     }
 
-    pub fn insert_note(&mut self, title: String, content: String) -> Result<Note, agdb::QueryError> {
+    pub async fn insert_note(&self, title: String, content: String) -> Result<Note, agdb::QueryError> {
         let mut note = Note {
             db_id: None,
             title,
             content,
         };
         
-        let value_query = QueryBuilder::insert()
-            .nodes()
-            .values([note.clone()])
-            .query();
+        let insert_note_result = self.db
+            .write().await
+            .exec_mut(QueryBuilder::insert()
+                .nodes()
+                .values([note.clone()])
+                .query()
+        )?;
+
+        let note_id = insert_note_result.ids().into_iter().next().unwrap(); 
         
-        let query_result = self.db.exec_mut(value_query)?;
-        let note_id = query_result.ids().first().unwrap().clone(); 
-        
-        let edge_query = QueryBuilder::insert()
-            .edges()
-            .from("users")
-            .to(note_id)
-            .query();
-        self.db.exec_mut(edge_query)?;
+        self.db
+            .write().await
+            .exec_mut(QueryBuilder::insert()
+                .edges()
+                .from("notes")
+                .to(note_id)
+                .query()
+            )?;
 
         note.db_id.replace(note_id);
         Ok(note)
     }
 
-    pub fn get_all_notes(&self) -> Result<Note, agdb::QueryError> {
-        let query = QueryBuilder::select()
-            .elements::<Note>()
-            .search()
-            .from("users")
-            .query();
-
-        Ok(self.db.exec(query)?.try_into()?)
+    pub async fn get_all_notes(&self) -> Result<Vec<Note>, agdb::QueryError> {
+        Ok(self.db
+            .read().await
+            .exec(QueryBuilder::select()
+                .elements::<Note>()
+                .search()
+                .from("notes")
+                .where_()
+                .keys("title")
+                .query())?
+                .try_into()?
+        )
     }
 
 }
